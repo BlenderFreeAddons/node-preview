@@ -31,7 +31,7 @@ addon_keymaps = []
 bl_info = {
     "name": "Node Preview",
     "author": "Simon Wendsche (B.Y.O.B.)",
-    "version": (1, 15),
+    "version": (1, 16),
     "blender": (2, 83, 0),
     "category": "Node",
     "location": "Shader Node Editor",

@@ -21,13 +21,11 @@ import bpy_extras
 import threading
 import queue
 from multiprocessing.connection import Client
-from array import array
 from time import time, perf_counter
 import os
 import numpy as np
 
 from . import THUMB_CHANNEL_COUNT, messages, get_image_linking_info, make_unique_image_name
-from . import nodepreview_worker
 
 
 jobs = queue.LifoQueue()
@@ -37,6 +35,9 @@ node_timestamps = {}
 free_requested = False
 stop_requested = False
 current_blend_abspath = ""
+
+COLORSPACES_SUPPORTED = {"sRGB", "Raw", "Non-Color"}
+COLORSPACES_GAMMA_CORRECTED = {"sRGB", "Filmic sRGB"}
 
 
 def background_print(*args, **kwargs):
@@ -223,11 +224,14 @@ def do(job):
             background_print(".blend doesn't exist:", blendpath)
             images_failed_to_link.put(image_names)
 
+    error_message = ""
+    full_error_log = ""
+
     # Load images from disk
-    for image_name, abspath in images_to_load:
+    for image_name, abspath, colorspace in images_to_load:
         need_to_load = False
         if image_name not in bpy.data.images:
-            background_print("loading image", image_name, "because it's not loaded yet")
+            background_print("loading image", image_name, "for the first time")
             need_to_load = True
         else:
             old_image = bpy.data.images[image_name]
@@ -237,40 +241,46 @@ def do(job):
                 background_print("replacing image", image_name, "because the path changed")
                 bpy.data.images.remove(old_image)
                 need_to_load = True
+            elif old_image.colorspace_settings.name != colorspace:
+                background_print("replacing image", image_name, "because the colorspace changed")
+                bpy.data.images.remove(old_image)
+                need_to_load = True
 
         if need_to_load:
-            # Blender images are always created with 4 channels
-            max_size = thumb_resolution
-            try:
-                pixels, width, height = nodepreview_worker.load_image_scaled(abspath, max_size)
-                image = bpy.data.images.new(image_name, width, height, alpha=True,
-                                            float_buffer=True, is_data=False)
-                if hasattr(image.pixels, "foreach_set"):
-                    image.pixels.foreach_set(pixels)
-                else:
-                    image.pixels[:] = pixels
-            except ValueError as error:
-                # Fallback for ValueError from nodepreview_worker.load_image_scaled()
-                # This happens if the worker doesn't support the image format. 
-                # We use Blender to load the image instead in that case.
-                background_print("Trying fallback")
-                image = bpy_extras.image_utils.load_image(abspath, place_holder=False, check_existing=True,
-                                                          force_reload=False)
-                if image:
-                    image.name = image_name
-                # I'd like to scale the image down to save memory, but that doesn't work due to a bug in Blender:
-                # (https://developer.blender.org/T85772)
-                # image.scale(width, height)  # Calculate correct width and height first
-                background_print("Fallback successful" if image else "Fallback could not load image")
+            # Load full resolution image and scale it down.
+            # I'm copying the loaded and scaled image pixels into a new image because of this Blender bug:
+            # https://developer.blender.org/T85772 (it would cause the scaled image to revert back to full size after rendering)
+            temp_image = bpy_extras.image_utils.load_image(abspath, check_existing=True, force_reload=False)
+            if temp_image:
+                temp_image.scale(thumb_resolution, thumb_resolution)
+                temp_image.name = temp_image.name + "___temp"
 
-            if image:
+                # Create new image with target (small) resolution
+                image = bpy.data.images.new(image_name, thumb_resolution, thumb_resolution, alpha=True, float_buffer=True, is_data=False)
+                image.colorspace_settings.name = colorspace
+
+                # Note: Blender images are always created with 4 channels
+                pixel_array_size = thumb_resolution * thumb_resolution * THUMB_CHANNEL_COUNT
+                temp_pixels = np.zeros(pixel_array_size, dtype=np.float32)
+                temp_image.pixels.foreach_get(temp_pixels)
+
+                if colorspace in COLORSPACES_GAMMA_CORRECTED:
+                    # Apply gamma correction
+                    gamma = np.full(pixel_array_size, 2.2, dtype=np.float32)
+                    gamma_alpha = gamma[3::4]  # A view of the gamma values affecting the alpha channel
+                    gamma_alpha[:] = 1.0  # Don't affect the alpha channel
+                    temp_pixels = np.power(temp_pixels, gamma)
+
+                image.pixels.foreach_set(temp_pixels)
+                bpy.data.images.remove(temp_image)
                 image["nodepreview_abspath"] = abspath
                 assert image.name == image_name
 
+                if colorspace not in COLORSPACES_SUPPORTED:
+                    error_message = "Unsupported Colorspace: " + colorspace
+
     node_tree = bpy.data.materials['Material'].node_tree
     starting_nodes = [node.name for node in node_tree.nodes]
-    error_message = ""
-    full_error_log = ""
 
     try:
         script = "import bpy; import mathutils; from contextlib import suppress; " + script
@@ -298,19 +308,7 @@ def do(job):
     settings.resolution_x = thumb_resolution
     settings.resolution_y = thumb_resolution
     bpy.ops.render.render(write_still=True)
-    result_array = array("b", [0]) * (thumb_resolution * thumb_resolution * THUMB_CHANNEL_COUNT)
-    # Could also load the result into a Blender image (overwrite always the same), to avoid using a C++ module
-    nodepreview_worker.load_image_array(result_array, thumb_path)
-    if result_array:
-        # Convert from bytes with values in range 0..128 to floats in range 0..1, because
-        # currently the new GPUTexture in Blender only supports float
-        result_array = np.array(result_array, dtype=np.float32)
-        result_array = np.divide(result_array, 128.0)
-
-        # Set alpha channel to 1 (full opacity). We don't use it anyway, and
-        # this eliminates (very) slight transparency due to inaccuracies.
-        alpha_channel = result_array[3::4]
-        alpha_channel[:] = 1.0
+    result_array = load_render_result(thumb_path)
 
     for node in node_tree.nodes:
         if node.name not in starting_nodes:
@@ -334,3 +332,12 @@ def do(job):
 
     node_timestamps[node_key] = time()
     return True, (node_key, result_array, thumb_resolution, timestamp, error_message, full_error_log)
+
+
+def load_render_result(path: str):
+    render_result = bpy_extras.image_utils.load_image(path, check_existing=True, force_reload=True)
+    array_size = len(render_result.pixels)
+    result_array = np.zeros(array_size, dtype=np.float32)
+    render_result.pixels.foreach_get(result_array)
+    bpy.data.images.remove(render_result)
+    return result_array

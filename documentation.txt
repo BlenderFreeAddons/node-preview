@@ -1,14 +1,9 @@
 NodePreview Documentation
 -------------------------
 
-This addon displays rendered thumbnails above Cycles shader nodes.
+This addon displays rendered thumbnails above Cycles and Eevee shader nodes.
 
 https://blendermarket.com/products/node-preview
-
-# Requirements
-
-* OS: Windows 10/11, Ubuntu 18.04/19.10/20.04, or macOS (Catalina or newer)
-* Blender version: 2.83 to 3.3
 
 # Features
 
@@ -20,38 +15,18 @@ https://blendermarket.com/products/node-preview
 
 # Caveats
 
-* Only Cycles nodes are supported. Previews are not generated for special Eevee nodes like "Shader to RGB", or for nodes from other render engines.
-  However, Eevee is compatible with almost all Cycles nodes, so the addon is still useful even if you render with Eevee
 * To show previews for packed images, the .blend file has to be saved to disk first, because they are loaded through linking from the .blend file
 * Thumbnails of image sequences are not updated when changing frames
 * IES nodes are currently not supported
 
 # Installation
 
-* On Windows, you have to install the Microsoft Visual C++ Redistributable for Visual Studio 2017: https://aka.ms/vs/15/release/vc_redist.x64.exe
-  (a newer version might be installed already, which is OK)
-* The rest of the installation works the same as with any other addon: https://docs.blender.org/manual/en/dev/editors/preferences/addons.html#rd-party-add-ons
-  (open user preferences, choose "install from file", select the downloaded .zip archive, click open, enable the addon in the list)
+https://docs.blender.org/manual/en/dev/editors/preferences/addons.html#rd-party-add-ons
+(Open user preferences, choose "install from file", select the downloaded .zip archive, click open, enable the addon in the list)
 
 # Usage
 
 Settings can be found in the user preferences by searching for "Node Preview" and clicking the arrow to the left of the addon entry
-
-# Updating or Removing the Addon on Windows
-
-This addon contains a .pyd shared library file which can't be deleted or overwritten while it is used by Blender.
-You can either close all Blender windows and update/remove the addon from the file browser, or if you want to update/remove from within Blender, follow the steps below:
-
-To Update:
-* Open the user preferences, navigate to the addon and disable the addon
-* Restart Blender
-* Open the user preferences again, click "Install" and choose the new zip package of Node Preview
-* Re-enable the addon
-
-To Remove:
-* Open the user preferences, navigate to the addon and disable the addon
-* Restart Blender
-* Open the user preferences again, navigate to the addon and press "Remove"
 
 # About Me
 
@@ -60,6 +35,19 @@ In 2014, I started working on Blender addons by contributing to the LuxRender ad
 NodePreview is my second commercial addon after ImageNodePreview: https://blendermarket.com/products/image-node-preview
 
 # Changelog
+
+v1.16
+* Added support for Float and Vector curve nodes
+* Improved performance for node groups with lots of links between their nodes
+* Improved image texture loading performance in the background process (e.g. from 3s to 0.6s loading time for a giant 40 megapixel image)
+* Improved render result loading performance in the background process
+* Added support for Raw and Non-Color colorspaces of image textures
+* Fixed addon not working if another addon registers a buggy class
+* Removed the "nodepreview_worker" binary module (replaced with Blender API and numpy). This makes the addon
+  more future-proof, because a new Python version in Blender will no longer require a re-compilation of the binary module.
+  The best thing however is that you no longer need to follow special steps when updating or removing the addon.
+* Fixed a text rendering problem in Blender 4.0 beta caused by a change in the Blender API
+* Fixed problems with node groups in Blender 4.0 beta caused by changes in the Blender API
 
 v1.15
 * Added support for UDIM images

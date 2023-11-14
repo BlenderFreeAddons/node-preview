@@ -18,10 +18,7 @@
 import bpy
 from mathutils import Color, Vector, Euler
 
-import re
-
 from . import needs_linking, UnsupportedNodeException, is_group_node, get_image_linking_info, make_unique_image_name
-from . import nodepreview_worker
 
 
 IGNORED_NODE_ATTRIBUTES = {
@@ -88,6 +85,16 @@ def sort_topologically(nodes, get_dependent_nodes):
     return sorted_nodes
 
 
+def to_valid_identifier(node_name: str):
+    result = "n"  # Identifiers must start with a letter, not a digit
+    for c in node_name:
+        if c.isalnum():
+            result += c
+        else:
+            result += "_" + str(ord(c))
+    return result
+
+
 def _get_attributes(source, ignore_list):
     return [attr for attr in dir(source)
             if not callable(getattr(source, attr))
@@ -103,13 +110,14 @@ def build_node_attributes_cache():
         if type_str.startswith("__"):
             continue
 
-        if issubclass(getattr(bpy.types, type_str), bpy.types.ShaderNode):
-            try:
+        try:
+            if issubclass(getattr(bpy.types, type_str), bpy.types.ShaderNode):
                 node = node_tree.nodes.new(type_str)
                 node_attributes_cache[type_str] = _get_attributes(node, IGNORED_NODE_ATTRIBUTES)
-            except:
-                # Some classes like ShaderNode or node groups can't be instanced
-                pass
+        except:
+            # Some classes like ShaderNode or node groups can't be instanced by node_tree.nodes.new(type_str)
+            # Also, getattr(bpy.types, type_str) threw an error for one user, possibly a custom Blender build
+            pass
 
     def register(type_str):
         node = node_tree.nodes.new(type_str)
@@ -128,7 +136,7 @@ def build_node_attributes_cache():
     bpy.data.node_groups.remove(node_tree)
 
 
-def node_to_script(node, node_tree, node_tree_owner, node_scripts_cache, group_hashes, incoming_links, background_colors, engine):
+def node_to_script(node, node_tree_owner, node_scripts_cache, group_hashes, incoming_links, background_colors, engine):
     script = [
         "material = bpy.data.materials['Material']",
         "node_tree = material.node_tree",
@@ -206,8 +214,24 @@ def _socket_interfaces_to_script(socket_interfaces, attr_name, script):
             if success:
                 script.append(f"socket.default_value = {value}")
             else:
-                print("Conversion of default_value failed:", socket_interface.name,
-                      socket_interface.default_value)
+                print("Conversion of default_value failed:", socket_interface.name, socket_interface.default_value)
+
+
+def _socket_interfaces_to_script_Blender4(interface, script):
+    for item in interface.items_tree:
+        if item.item_type == "SOCKET":
+            # NodeTreeInterface.new_socket(name, description="", in_out='INPUT', socket_type='DEFAULT', parent=None)
+            script.append(f"socket = node_tree.interface.new_socket({repr(item.name)}, "
+                          f"in_out={repr(item.in_out)}, "
+                          f"socket_type={repr(item.bl_socket_idname)})")
+
+            # Not sure if this is needed, couldn't find a difference without it in some quick tests
+            if hasattr(item, "default_value"):
+                value, success = _property_to_string(item.default_value)
+                if success:
+                    script.append(f"socket.default_value = {value}")
+                else:
+                    print("Conversion of default_value failed:", item.name, item.default_value)
 
 
 class AnnotatedNodeGroup:
@@ -252,14 +276,25 @@ def node_groups_to_script(nodes):
         group_script.append(f"node_group_mapping[{repr(unique_name)}] = node_tree")
 
         # Create group inputs and outputs
-        _socket_interfaces_to_script(group.inputs, "inputs", group_script)
-        _socket_interfaces_to_script(group.outputs, "outputs", group_script)
+        if bpy.app.version >= (4, 0, 0):
+            _socket_interfaces_to_script_Blender4(group.interface, group_script)
+        else:
+            _socket_interfaces_to_script(group.inputs, "inputs", group_script)
+            _socket_interfaces_to_script(group.outputs, "outputs", group_script)
 
         for node in group.nodes:
             node_script, sub_images_to_load, sub_images_to_link = _single_node_to_script(node, group_hashes)
             group_script += node_script
             images_to_load.update(sub_images_to_load)
             images_to_link.update(sub_images_to_link)
+
+        # socket.links is a very expensive property to access, so we cache the link types we are interested in most in this dict
+        outgoing_links = {}
+        for link in group.links:
+            try:
+                outgoing_links[link.from_socket].append(link)
+            except KeyError:
+                outgoing_links[link.from_socket] = [link]
 
         # Create all links
         # On regular nodes, multiple sockets may have the same name, so we have to use the index to refer to them.
@@ -271,23 +306,24 @@ def node_groups_to_script(nodes):
             for source_socket_index, source_socket in enumerate(source_node.outputs):
                 source_socket_identifier = repr(source_socket.name) if source_is_OSL_node else source_socket_index
 
-                for link in source_socket.links:
-                    target_is_OSL_node = link.to_node.bl_idname == "ShaderNodeScript"
-                    target_node_index = group.nodes.find(link.to_node.name)
-                    if target_node_index == -1:
-                        raise Exception(f"Could not find target node: {link.to_node.name} in node group: {group.name}")
+                if source_socket.is_linked:
+                    for link in outgoing_links[source_socket]:
+                        target_is_OSL_node = link.to_node.bl_idname == "ShaderNodeScript"
+                        target_node_index = group.nodes.find(link.to_node.name)
+                        if target_node_index == -1:
+                            raise Exception(f"Could not find target node: {link.to_node.name} in node group: {group.name}")
 
-                    # Can't use find here because a node can have multiple sockets with the same name
-                    target_socket_identifier = -1
-                    for i, socket in enumerate(link.to_node.inputs):
-                        if socket == link.to_socket:
-                            target_socket_identifier = repr(socket.name) if target_is_OSL_node else i
-                            break
-                    if target_socket_identifier == -1:
-                        raise Exception(f"Could not find target socket: {link.to_socket.name} in node group: {group.name}")
+                        # Can't use find here because a node can have multiple sockets with the same name
+                        target_socket_identifier = -1
+                        for i, socket in enumerate(link.to_node.inputs):
+                            if socket == link.to_socket:
+                                target_socket_identifier = repr(socket.name) if target_is_OSL_node else i
+                                break
+                        if target_socket_identifier == -1:
+                            raise Exception(f"Could not find target socket: {link.to_socket.name} in node group: {group.name}")
 
-                    group_script.append(f"node_tree.links.new(node_tree.nodes[{source_node_index}].outputs[{source_socket_identifier}], "
-                                                            f"node_tree.nodes[{target_node_index}].inputs[{target_socket_identifier}])")
+                        group_script.append(f"node_tree.links.new(node_tree.nodes[{source_node_index}].outputs[{source_socket_identifier}], "
+                                                                f"node_tree.nodes[{target_node_index}].inputs[{target_socket_identifier}])")
 
         group_script_joined = "\n".join(group_script)
         script.append(group_script_joined)
@@ -339,18 +375,23 @@ def _node_properties_to_script(node, node_identifier, is_OSL_node, script, group
             filepath = image.filepath
         abspath = bpy.path.abspath(filepath, library=image.library)
         background_image_name = make_unique_image_name(image)  # The name used to refer to this image in the background process
-        images_to_load.add((background_image_name, abspath))
+        images_to_load.add((background_image_name, abspath, image.colorspace_settings.name))
 
         # TODO what about image sequences/other image user settings?
-        # The path is part of the script so a change of the path triggers an update through the script hash
+
+        # Note: Do NOT try to set the color space here. We create images "manually" because they need to be downscaled
+        # specially, and Blender has a bug where it sets all pixels to black if the colorspace of a manually created
+        # image is changed afterwards. All colorspace conversion has to be done in the background process during loading
+        # of the image.
+
+        # The path and colorspace are part of the script so a change triggers an update through the script hash
         script.append(f"# {abspath}")
+        script.append(f"# {image.colorspace_settings.name}")
         script.append("try:")
         script.append(f"    image = bpy.data.images[{repr(background_image_name)}]")
         script.append(f"    {node_identifier}.image = image")
         script.append("except:")
         script.append(f'    print("failed to find image", {repr(background_image_name)})')
-
-        # script.append(f"image.colorspace_settings.name = '{image.colorspace_settings.name}'")  # TODO doesn't work
 
     # Special properties: color ramp
     if hasattr(node, "color_ramp"):
@@ -368,8 +409,8 @@ def _node_properties_to_script(node, node_identifier, is_OSL_node, script, group
             color, _ = _property_to_string(ramp.elements[i].color)
             script.append(f"{node_identifier}.color_ramp.elements[{i}].color = {color}")
 
-    # Special properties: RGB curve
-    if node.bl_idname == "ShaderNodeRGBCurve":
+    # Special properties: Curves
+    if node.bl_idname in {"ShaderNodeRGBCurve", "ShaderNodeFloatCurve", "ShaderNodeVectorCurve"}:
         mapping = node.mapping
         _attributes_to_script(_get_attributes(mapping, []), mapping, f"{node_identifier}.mapping", script)
 
@@ -441,7 +482,7 @@ def _node_outputs_to_script(node, node_identifier, is_OSL_node, script):
 
 def _single_node_to_script(node, group_hashes):
     """ Used in node group conversion. Only creates a single node without evaluating linked nodes. """
-    node_identifier = nodepreview_worker.to_valid_identifier(node.name)
+    node_identifier = to_valid_identifier(node.name)
     bl_idname = "ShaderNodeGroup" if is_group_node(node) else node.bl_idname
     script = [f"{node_identifier} = node_tree.nodes.new('{bl_idname}')"]
     is_OSL_node = node.bl_idname == "ShaderNodeScript"
@@ -507,7 +548,7 @@ def _find_socket_index(outputs, socket):
 def _make_node_creation_script(node, group_hashes):
     # Inside a node tree, the name is unique
     # Note: name collisions aren't allowed to happen between this node and nodes linked to it
-    node_identifier = nodepreview_worker.to_valid_identifier(node.name)
+    node_identifier = to_valid_identifier(node.name)
     bl_idname = "ShaderNodeGroup" if is_group_node(node) else node.bl_idname
     script = [
         f"{node_identifier} = node_tree.nodes.new({repr(bl_idname)})",

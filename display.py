@@ -40,25 +40,6 @@ import queue
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 
-if platform.system() not in {"Windows", "Linux", "Darwin"}:
-    raise Exception("\n\nUnsupported platform:", platform.system())
-
-try:
-    from . import nodepreview_worker
-except ImportError as error:
-    msg = ""
-    py_version = platform.python_version_tuple()[:2]
-    if py_version not in (("3", "7"), ("3", "9"), ("3", "10")):
-        msg = (f"\n\nThe Python version of this Blender build (Python {py_version[0]}.{py_version[1]})"
-               f" is not supported.\nSupported are Python 3.7, 3.9 and 3.10.\n"
-               f"Check the documentation.txt file to see which Blender versions are supported.")
-    elif platform.system() == "Windows":
-        msg = ("\n\nYou have to install the following: https://aka.ms/vs/15/release/vc_redist.x64.exe\n"
-               "Check the documentation.txt file for more information about how to install this addon.")
-    # Raise from None to suppress the unhelpful
-    # "during handling of the above exception, ..."
-    raise Exception(msg + "\n\nImportError: %s" % error) from None
-
 
 from . import (addon_name, THUMB_CHANNEL_COUNT, SUPPORTED_NODE_TREE, force_node_editor_draw,
                needs_linking, UnsupportedNodeException, BACKGROUND_PATTERNS, get_blend_abspath,
@@ -210,7 +191,7 @@ class Thumbnail:
         # No longer needed, delete to save memory
         self.pixels = None
 
-    def draw(self, bottom_left, bottom_right, top_right, top_left, scaled_zoom):
+    def draw(self, bottom_left, bottom_right, top_right, top_left, scaled_zoom, text_x):
         shader.bind()
         shader.uniform_sampler("image", self.texture)
 
@@ -225,13 +206,13 @@ class Thumbnail:
             # TODO TRI_FAN deprecated, replace with 'TRI_STRIP' or 'TRIS' (https://developer.blender.org/rBe2d8b6dc06)
             {
                 "pos": (bottom_left, bottom_right, top_right, top_left),
-                "texCoord": ((0, 1), (1, 1), (1, 0), (0, 0)),  # Note: Mirrored along y axis
+                "texCoord": ((0, 0), (1, 0), (1, 1), (0, 1)),
             },
         )
         batch.draw(shader)
 
         if self.text:
-            position = (top_left[0], top_left[1] + 3 * scaled_zoom)
+            position = (text_x, top_left[1] + 3 * scaled_zoom)
             draw_text(self.text, position, 10, scaled_zoom)
 
 
@@ -241,12 +222,11 @@ def draw_text(text, position, font_size, scaled_zoom):
     old_blend_mode = gpu.state.blend_get()
 
     FONT_ID = 0
-    FONT_DPI = 72
 
     x, y = position
     for line in reversed(text.split("\n")):
         blf.position(FONT_ID, x, y, 0)
-        blf.size(FONT_ID, round(font_size * scaled_zoom), FONT_DPI)
+        blf.size(FONT_ID, round(font_size * scaled_zoom))
         blf.draw(FONT_ID, line)
         y += font_size * scaled_zoom
 
@@ -432,7 +412,7 @@ def handler():
 
         try:
             # Even if the preview is disabled, we need to convert the script so dependent nodes can retrieve it from the node scripts cache
-            node_script, images_to_load, images_to_link = node_to_script(node, node_tree, node_tree_owner, node_scripts_cache,
+            node_script, images_to_load, images_to_link = node_to_script(node, node_tree_owner, node_scripts_cache,
                                                                          group_hashes, incoming_links, background_colors,
                                                                          context.scene.render.engine)
         except UnsupportedNodeException:
@@ -540,11 +520,11 @@ def handler():
         if thumb.texture is None:
             thumb.init_texture()
 
-        thumb.draw(bottom_left, bottom_right, top_right, top_left, scaled_zoom)
-
         text_x = topleft_x
         text_y = top_left[1] + 3 * scaled_zoom
         text_size = 10
+
+        thumb.draw(bottom_left, bottom_right, top_right, top_left, scaled_zoom, text_x)
 
         if not node.node_preview.auto_choose_output:
             output = node.outputs[node.node_preview.output_index].name
