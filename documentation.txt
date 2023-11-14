@@ -1,0 +1,157 @@
+NodePreview Documentation
+-------------------------
+
+This addon displays rendered thumbnails above Cycles shader nodes.
+
+https://blendermarket.com/products/node-preview
+
+# Requirements
+
+* OS: Windows 10/11, Ubuntu 18.04/19.10/20.04, or macOS (Catalina or newer)
+* Blender version: 2.83 to 3.3
+
+# Features
+
+* For each node, a preview thumbnail is rendered
+* On edits, all affected nodes are automatically updated
+* Previews are rendered in a background process to keep the Blender interface fluid and responsive
+* No changes are made to the .blend, others without the addon can still open your scenes without problems
+* High-resolution displays supported (works with Blender's resolution scale feature)
+
+# Caveats
+
+* Only Cycles nodes are supported. Previews are not generated for special Eevee nodes like "Shader to RGB", or for nodes from other render engines.
+  However, Eevee is compatible with almost all Cycles nodes, so the addon is still useful even if you render with Eevee
+* To show previews for packed images, the .blend file has to be saved to disk first, because they are loaded through linking from the .blend file
+* Thumbnails of image sequences are not updated when changing frames
+* IES nodes are currently not supported
+
+# Installation
+
+* On Windows, you have to install the Microsoft Visual C++ Redistributable for Visual Studio 2017: https://aka.ms/vs/15/release/vc_redist.x64.exe
+  (a newer version might be installed already, which is OK)
+* The rest of the installation works the same as with any other addon: https://docs.blender.org/manual/en/dev/editors/preferences/addons.html#rd-party-add-ons
+  (open user preferences, choose "install from file", select the downloaded .zip archive, click open, enable the addon in the list)
+
+# Usage
+
+Settings can be found in the user preferences by searching for "Node Preview" and clicking the arrow to the left of the addon entry
+
+# Updating or Removing the Addon on Windows
+
+This addon contains a .pyd shared library file which can't be deleted or overwritten while it is used by Blender.
+You can either close all Blender windows and update/remove the addon from the file browser, or if you want to update/remove from within Blender, follow the steps below:
+
+To Update:
+* Open the user preferences, navigate to the addon and disable the addon
+* Restart Blender
+* Open the user preferences again, click "Install" and choose the new zip package of Node Preview
+* Re-enable the addon
+
+To Remove:
+* Open the user preferences, navigate to the addon and disable the addon
+* Restart Blender
+* Open the user preferences again, navigate to the addon and press "Remove"
+
+# About Me
+
+I am the author of the Blender addon for LuxCore, https://github.com/luxcorerender/blendluxcore
+In 2014, I started working on Blender addons by contributing to the LuxRender addon.
+NodePreview is my second commercial addon after ImageNodePreview: https://blendermarket.com/products/image-node-preview
+
+# Changelog
+
+v1.15
+* Added support for UDIM images
+* Added a new sphere preview mode. The default shortcut to switch between plane and sphere modes is Ctrl+P
+* Eevee is now used to render the previews if Eevee is the active render engine.
+  This means that Eevee-only nodes like "Shader to RGB" or "Specular BSDF" are now supported.
+* Added a popover menu for Node Preview in the node editor header (button on the right)
+* The addon now uses the new GPU module instead of the deprecated BGL module. This makes it more future-proof
+  (as BGL will be removed at some point) and also solves a problem that happened on macOS with the new Metal backend.
+* Fixed addon not loading in Blender 3.6 alpha due to a change in the Blender API (script_directories)
+
+v1.14
+* Fixed a bug causing previews to disappear ("error setting NodePreviewTreeProps.update_first_part")
+  (this was a regression introduced in v1.11)
+
+v1.13:
+* Fixed a minor bug where an operator poll function would raise an Exception instead of simply returning False
+* Fixed background process sometimes not starting on macOS
+
+v1.12:
+* Fixed errors happening when nodes had attributes registered by other addons
+  (this was a regression introduced in v1.11)
+* Fixed previews not updating occasionally when more than one node tree is opened
+  (this was a regression introduced in v1.11)
+* Fixed incorrect output socket being used on node group instances that have multiple outputs with the same name
+
+v1.11:
+* Prevented potential problems when a node name inside a node group isn't a valid Python identifier (e.g. because it starts with a number)
+* Improved performance in certain complex node trees. In one particular testscene, previews were only slowly
+  showing up after 5 minutes of waiting - now they start appearing instantly and all previews for the tree are
+  completed in a few seconds
+
+v1.10:
+* Prevented problems when a material and a world have the same name and contain nodes with the same name
+* Fixed preview thumbnails flickering in Blender 3.1 in the time between detaching a node wire and letting go of it
+  (the node socket reports that it is still linked, while not actually being linked anymore, which might be a bug in Blender)
+* Added support for OSL script nodes
+* Fixed potential name collision problems when linking an image that has the same name as an existing image
+  (e.g. there's a "stone.png" image in the .blend, and a different "stone.png" is linked in from another .blend)
+* Fixed bug triggered by unconnected reroute nodes in node groups
+* Added a workaround for a Blender bug (T97027/T97259) that made a diagonal line appear in the thumbnails in some cases
+
+v1.9:
+* Added support for Python 3.10 on macOS (including on M1 CPUs)
+* Added a shortcut for choosing the active output of a node manually. Before, the addon always used the first
+  connected output automatically. This is still the default behaviour, but now the user can also select a node,
+  press Shift+O, and choose any other output to be shown in the preview thumbnail.
+
+v1.8:
+* Added support for Python 3.10 on Windows and Linux
+
+v1.7:
+* Added support for the Apple Silicon (M1) version of Blender
+
+v1.6:
+* Fixed previews not working after opening a .blend file directly (by double-clicking it in the OS file explorer)
+  (this was a regression introduced in v1.5)
+* Fixed some shader node previews not working in Blender 3.0
+
+v1.5:
+* Fixed background process stopping when an image file did not exist at the specified path
+* New packed images are now automatically loaded as soon as possible (when the .blend file is saved)
+* Improved the error messages shown when an image file doesn't exist or could not be linked
+* Fixed images not being reloaded if the path of an existing image datablock was modified
+* If a packed file can't be linked, but exists on disk, it is now loaded from disk as fallback
+* The debug log output can now be enabled in the user preferences (can be useful when making a bug report)
+* Fixed old rendering jobs still being processed after loading a new .blend file (was a problem when opening
+  a file with hundreds of nodes, then switching to another file before all thumbnails were rendered. Outdated jobs are now discarded)
+
+v1.4:
+* Added support for Blender 2.93
+* Fixed fallback for unsupported image formats not working and returning a black image
+* Fixed addon not working if an alternative scripts path was set, but the addon was installed in the default location
+
+v1.3:
+* Improved performance in complex node trees. In a scene with 295 nodes, the update checks took
+  around 200 milliseconds before, which resulted in 5 frames per second in the node editor.
+  Now, they only take around 40 milliseconds (25 frames per second)
+* Fix UV Map output being black when using a UV map that doesn't exist on the preview mesh
+* New shortcut: Ctrl+Shift+P toggles the node preview thumbnail of selected nodes on/off
+* It is now possible to choose in the user preferences wether previews should be visible by default.
+  You can set this to disabled if you only want a few nodes to show previews (use Ctrl+Shift+P to enable them)
+* New controls in the N-Panel of the node editor (right side), with options to disable/enable
+  previews for the whole node tree or selected nodes.
+
+v1.2:
+* Added support for macOS
+* Fixed frames in node groups causing all thumbnails for the current node tree to disappear
+* Fixed unsupported nodes causing all previews to disappear
+* Added support for custom nodes which are internally node groups, e.g. FxNodes
+
+v1.1:
+* Enabled previews on the Geometry node
+* Fixed addon not working if installed in an alternative scripts path (Preferences > File Paths > Data > Scripts)
+* Users can now pick custom colors for the background which is shown behind transparent shaders
